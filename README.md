@@ -1,249 +1,221 @@
-# Cracking OPOv1: Reverse Engineering the OnePlus Buds Protocol
+# NordBuds Mac — ANC Toggle for OnePlus Nord Buds 4 Pro
 
-Control your OnePlus Nord Buds 3 Pro ANC modes directly from your Mac — without the HeyMelody app.
+Switch ANC / Off / Transparency on **OnePlus Nord Buds 4 Pro** from your Mac,
+without the Hey Melody app. Ships as a tiny CLI plus optional
+[Raycast](https://www.raycast.com/) script commands so a global hotkey can
+flip modes in roughly a second.
 
----
-
-## The Problem
-
-You're working on your laptop. Earbuds connected via Bluetooth. You want to switch from Transparency to ANC mode but the gesture won't work. No problem — you'll just use the official app.
-
-**Oh wait.** There is no desktop app. OnePlus never made one. You need your phone just to change a setting on earbuds you already own.
-
-That's absurd. The hardware link exists — Bluetooth is already connected. But software control? Locked behind a phone app.
-
-So I decided to crack it myself.
-
----
-
-## How We Cracked It
-
-### 1. The btsnoop Capture
-
-Android lets you enable **Bluetooth HCI snoop logging** in developer options. Every BLE packet between your phone and the earbuds gets captured. I copied that log to my laptop and opened it in Wireshark.
-
-### 2. Decompiling HeyMelody
-
-The official HeyMelody app has to communicate with the earbuds somehow. I pulled the APK, ran it through **jadx** (Java decompiler), and found the exact Java code that builds ANC commands.
-
-```java
-// Category = 0x04 (ANC), Sub-command = 0x04 (Set)
-// Combined = 1028 = 0x0404
-```
-
-### 3. Finding the Right Service
-
-The earbuds expose multiple BLE GATT services. Most people (including me initially) assumed the **FE2C** service was the main one.
-
-**Wrong.** FE2C is for telemetry and firmware updates. The actual ANC commands go through **`0000079A`** — the OPO (Oppo/OnePlus) protocol service.
-
-### 4. The Write Type Trap
-
-In CoreBluetooth, there are two write types:
-- `.withResponse` — waits for acknowledgment
-- `.withoutResponse` — fire and forget
-
-The earbuds **only** accept `.withoutResponse`. Using `.withResponse` silently fails. No error. No response.
-
-### 5. Authentication Required
-
-You can't just send an ANC command. First you must:
-1. Send **HELLO** packet
-2. Wait 2 seconds
-3. Send **REGISTER** with device token `B5 50 A0 69`
-4. Wait 1.5 seconds
-5. Then you can send commands
-
-### 6. The Response Channel Problem
-
-The earbuds send responses on **both** `0000079A` AND `FE2C` services. If you only subscribe to one, you miss the responses.
-
-The fix? Subscribe to notifications on **every** characteristic across **both** services.
+> **This is a fork.** All the hard reverse-engineering work was done by
+> [@Vedant1521](https://github.com/Vedant1521) in
+> [Cracked-Oneplus_buds](https://github.com/Vedant1521/Cracked-Oneplus_buds)
+> (Nord Buds 3 Pro). This fork:
+>
+> - Re-maps the ANC mode bytes for the **Nord Buds 4 Pro** family
+>   (`0x01=Off, 0x02=ANC, 0x04=Transparency` — inverted from the 3 Pro).
+>   Mapping confirmed from [@advnpzn](https://github.com/advnpzn)'s
+>   [budsctl](https://github.com/advnpzn/budsctl) `oneplus_buds4.yaml` plugin.
+> - Restricts BLE service/characteristic discovery to the OPO control service
+>   only, dropping the FE2C subscription and the blanket notify-on-everything
+>   path (≈3 s → ≈0.5 s).
+> - Adds a proper `.app` bundle (`NordBuds.app`) with
+>   `NSBluetoothAlwaysUsageDescription` so macOS TCC actually grants
+>   Bluetooth access instead of `SIGABRT`-ing the process.
+> - Adds `nordbuds-cli`, a wrapper that launches the bundle via
+>   LaunchServices (so the bundle, not Terminal, is the responsible TCC
+>   process) and streams its log back to the terminal.
+> - Adds Raycast Script Commands (`silent` mode) for one-hotkey toggling.
+> - Adds an RFCOMM fallback (`nordbuds_rfcomm.py`) for variants that don't
+>   expose the BLE control service.
 
 ---
 
-## Quick Start
+## Compatibility
 
-```bash
-chmod +x nordbuds.swift
+### ✅ Confirmed
 
-./nordbuds.swift on      # ANC On
-./nordbuds.swift off     # ANC Off  
-./nordbuds.swift trans   # Transparency
-./nordbuds.swift battery # Battery levels
-./nordbuds.swift info    # Device info
-./nordbuds.swift eq      # EQ settings
-```
+- **OnePlus Nord Buds 4 Pro** (macOS, Apple Silicon)
 
----
+### 🔄 Likely to work
 
-## Command Flow
+Anything in the **OPOv1** family that uses BLE service
+`0000079A-D102-11E1-9B23-00025B00A5A5`. Other Nord/Buds models in the same
+family (3 Pro, Buds Pro 2, Bullets, several Oppo Enco / Realme Buds) likely
+work too, but the mode-byte mapping or auth token may differ — see
+*Troubleshooting* below.
 
-```mermaid
-sequenceDiagram
-    participant Mac
-    participant Buds
+### ❌ Won't work out of the box
 
-    Note over Mac,Buds: Step 1: Open Session
-    Mac->>Buds: HELLO<br/>AA 07 00 00 00 01 23 00 00 12
-    Buds-->>Mac: ACK
-    
-    Note over Mac,Buds: Wait ~2 seconds
-    
-    Note over Mac,Buds: Step 2: Authenticate
-    Mac->>Buds: REGISTER + token B5 50 A0 69
-    Buds-->>Mac: ACK
-    
-    Note over Mac,Buds: Wait ~1.5 seconds
-    
-    Note over Mac,Buds: Step 3: Query Current Mode
-    Mac->>Buds: QUERY ANC status
-    Buds-->>Mac: RESP (current mode)
-    
-    Note over Mac,Buds: Wait ~1.5 seconds
-    
-    Note over Mac,Buds: Step 4: Set Mode
-    Mac->>Buds: SET ANC (mode: 01/02/04)
-    Buds-->>Mac: ACK
-    Note over Buds: ✓ You hear the click!
-```
-
----
-
-## Key Packets
-
-| Packet | Hex | Description |
-|--------|-----|-------------|
-| HELLO | `AA 07 00 00 00 01 23 00 00 12` | Open session |
-| REGISTER | `AA 0C 00 00 00 85 41 05 00 00 B5 50 A0 69` | Auth with token |
-| ANC ON | `AA 0A 00 00 04 04 42 03 00 01 01 01` | Mode = 0x01 |
-| ANC OFF | `AA 0A 00 00 04 04 40 03 00 01 01 04` | Mode = 0x04 |
-| TRANSPARENT | `AA 0A 00 00 04 04 42 03 00 01 01 02` | Mode = 0x02 |
-
----
-
-## Packet Structure
-
-```
-┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬───────┐
-│ SOF  │ LEN  │ PAD  │ PAD  │ CAT  │ SUB  │ SEQ  │ FLAG │ D0   │ D1   │ MODE  │
-│  AA  │  0A  │  00  │  00  │  04  │  04  │  42  │  03  │  00  │  01  │  01   │
-│ byte0│ byte1│ byte2│ byte3│ byte4│ byte5│ byte6│ byte7│ byte8│ byte9│ byte11│
-└──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴───────┘
-
-SOF:  Always 0xAA (start of frame)
-LEN:  Length from CAT to end
-CAT:  0x00=System, 0x04=ANC, 0x05=EQ, 0x06=Battery
-SUB:  0x01=Hello, 0x85=Register, 0x04=Set, 0x82=Query
-MODE: 0x01=ANC On, 0x02=Transparency, 0x04=ANC Off
-```
-
----
-
-## GATT Services
-
-| Service | UUID | Purpose |
-|---------|------|---------|
-| **OPO** | `0000079A-D102-11E1-9B23-00025B00A5A5` | Main command channel |
-| Write | `0100079A-...` | Send commands (must use .withoutResponse) |
-| Notify | `0200079A-...` | Receive responses |
-| FE2C | `FE2C...` | Device telemetry (also receives responses!) |
-
----
-
-## OPO Protocol Overview
-
-```mermaid
-graph TB
-    subgraph "Commands"
-        H[HELLO 0x01] --> R[REGISTER 0x85]
-        R --> Q[QUERY 0x82]
-        Q --> S[SET 0x04]
-    end
-    
-    subgraph "Categories"
-        ANC[ANC 0x04] --> EQ[Equalizer 0x05]
-        EQ --> BAT[Battery 0x06]
-    end
-    
-    subgraph "Mode Values"
-        M1[0x01 = ANC On] --> M2[0x02 = Transparency]
-        M2 --> M3[0x04 = ANC Off]
-    end
-    
-    R -.->|token| Device
-    S -.->|mode| Device
-```
-
----
-
-## What We Learned
-
-1. **Big companies don't document protocols on purpose** — it's how they lock you into their ecosystem
-2. **btsnoop captures are the ground truth** — read packets first, guess second
-3. **BLE silently fails** — wrong write type, wrong service, wrong channel. No errors.
-4. **The fix was simple** — subscribe to both services
-
----
-
-## Compatible Devices
-
-This protocol works on all devices using **OPOv1** (Oppo Protocol) — the same protocol across the BBK Electronics audio ecosystem:
-
-### ✅ Confirmed Working
-- **OnePlus Nord Buds 3 Pro**
-
-### 🔄 Likely Compatible (OPOv1 Devices)
-
-**OnePlus:**
-- Nord Buds 3
-- Nord Buds CE 5G
-- Nord Buds 2
-- Buds Pro 2
-- Buds Pro
-- Bullets Wireless Z2
-- Bullets Wireless Z
-
-**Oppo:**
-- Enco X2
-- Enco Free2
-- Enco Free2i
-- Enco Air3
-- Enco Air2 Pro
-- Enco Air2
-
-**Realme:**
-- Buds Air 5 Pro
-- Buds Air 3
-- Buds Air 2 Pro
-- Buds T1
-
-> **Note:** The token `B5 50 A0 69` works for Nord Buds 3 Pro. Other devices may use different tokens. Try the script — it should work!
-
----
-
-## Troubleshooting
-
-**No response?**
-- Make sure buds are connected to your Mac via Bluetooth
-
-**Command ignored?**
-- Using `.withResponse` — must be `.withoutResponse`
-- Missing authentication — you MUST send HELLO + REGISTER first
-
-**No ACK?**
-- Subscribe to notifications on BOTH 0000079A AND FE2C characteristics
+- Buds that only expose the control protocol over **RFCOMM** (Bluetooth
+  Classic SPP) rather than BLE — try the `nordbuds_rfcomm.py` fallback.
+- Anything that needs a different REGISTER auth token. The script uses
+  Vedant's `B5 50 A0 69`; it's worked on every OPOv1 device tested so far,
+  but a btsnoop capture is the only way to confirm for new hardware.
 
 ---
 
 ## Requirements
 
-- macOS
-- Xcode Command Line Tools
-- OPO-based earbuds (paired to Mac)
+- macOS (tested on Apple Silicon, Sonoma+).
+- **Xcode Command Line Tools** (for `swiftc` + `codesign`) —
+  `xcode-select --install`.
+- Buds paired to your Mac under System Settings → Bluetooth.
+- *Optional:* [Raycast](https://www.raycast.com/) for hotkey toggles.
+- *Optional* (RFCOMM fallback only): `pip install pyobjc-framework-IOBluetooth
+  pyobjc-framework-Cocoa`.
 
 ---
 
+## Build
+
+```bash
+git clone https://github.com/<you>/nordbuds-mac.git
+cd nordbuds-mac
+./build.sh
+```
+
+This produces `NordBuds.app` next to the script (ad-hoc signed, with
+`Info.plist` containing the Bluetooth usage description macOS demands).
+
+---
+
+## Usage — CLI
+
+```bash
+./nordbuds-cli on      # turn ANC on
+./nordbuds-cli off     # turn ANC off
+./nordbuds-cli trans   # transparency mode
+```
+
+First run: macOS shows a **"NordBuds would like to use Bluetooth"** dialog.
+Click **Allow**. Subsequent runs are silent and take ~0.5 s.
+
+If you ever revoke the permission, you can re-grant in
+**System Settings → Privacy & Security → Bluetooth**.
+
+---
+
+## Usage — Raycast hotkeys
+
+1. Open **Raycast → Settings → Extensions**, find **Script Commands**.
+2. Add `~/path/to/nordbuds-mac/raycast/` as a Script Directory.
+3. Run the **Reload Script Directories** Raycast command.
+4. Search Raycast for **ANC On / ANC Off / Transparency** and bind hotkeys
+   (e.g. ⌃⌥1 / ⌃⌥2 / ⌃⌥3) or aliases.
+
+The scripts run in `silent` mode — no Raycast window pops up, only a small
+HUD when the command finishes.
+
+---
+
+## How it works (quick)
+
+1. CoreBluetooth's `retrieveConnectedPeripherals(withServices:)` finds the
+   buds by the **OPO** service UUID (`0000079A-…`). This is name-independent
+   — renaming the buds in System Settings does not break the script.
+2. Discover only the OPO write + notify characteristics.
+3. Send three frames back-to-back over the write characteristic:
+   `HELLO` → `REGISTER` (with auth token `B5 50 A0 69`) → `SET ANC`.
+4. Wait 250 ms for the radio to flush, exit.
+
+Frame format:
+
+```
+AA <len> 00 00 <category> <subcmd> <seq> 03 00 01 01 <mode>
+```
+
+For Nord Buds 4 Pro:
+
+| Mode          | Byte |
+|---------------|------|
+| ANC Off       | 0x01 |
+| ANC On        | 0x02 |
+| Transparency  | 0x04 |
+
+For the Nord Buds 3 Pro mapping and the full protocol writeup, see Vedant's
+original [README](https://github.com/Vedant1521/Cracked-Oneplus_buds).
+
+---
+
+## Limitations / things to know
+
+- **Hey Melody must be quit before running.** It holds the control channel
+  exclusively; while it's open, your `SET` frames will silently no-op.
+- **TCC needs a real `.app` bundle.** Running the bare compiled binary or
+  the `.swift` shebang crashes with a privacy violation. Always go through
+  `nordbuds-cli` or the bundle's executable launched via `open`.
+- **Ad-hoc signing only.** The binary is signed with `codesign -s -` so it
+  works on your own machine; it has no Apple Developer ID. macOS may prompt
+  the first time about an unidentified developer if you distribute it.
+- **No adaptive ANC mode.** The buds support a 4th "adaptive" mode in
+  Hey Melody; the opcode byte for it on the 4 Pro hasn't been mapped here.
+  If you want it, capture a btsnoop log while toggling Adaptive in
+  Hey Melody and diff the SET frame against the other three.
+- **No state read-back.** The script fires-and-forgets the mode; it doesn't
+  ask the buds "what mode are you in?" before switching. If you want a
+  proper three-state toggle, capture the `QUERY` response format and parse it.
+- **REGISTER token is shared across devices.** If a future firmware update
+  rotates the per-device token, you'll need to re-capture it via btsnoop.
+- **Buds 4 Pro only verified.** Other models in the OPOv1 family *should*
+  work with possibly different mode bytes / tokens — see Troubleshooting.
+
+---
+
+## Troubleshooting
+
+**`nordbuds quit unexpectedly` / silent abort**
+TCC killed the process because the launching app doesn't have Bluetooth
+permission attached to a proper Info.plist. Always use `./nordbuds-cli …`
+(it goes through the `.app` bundle). Do **not** invoke the bare binary
+under `NordBuds.app/Contents/MacOS/` directly.
+
+**`[FOUND]`/`[+]` lines appear but nothing audible happens**
+- Hey Melody is open — quit it.
+- Mode bytes don't match your variant. Try swapping the mapping in
+  `nordbuds.swift` (`sendAncMode(0xXX, …)`), or capture a btsnoop log to
+  confirm what your buds expect.
+- Auth token mismatch. The SET frame is silently rejected if REGISTER
+  didn't authenticate. Capture a btsnoop log of Hey Melody's session and
+  patch the bytes after `0x85 0x41 0x05 0x00 0x00` in the REGISTER packet.
+
+**Script never finds the `0000079A` service**
+Your buds probably use Bluetooth Classic RFCOMM instead of BLE for control.
+Try the fallback:
+
+```bash
+pip3 install pyobjc-framework-IOBluetooth pyobjc-framework-Cocoa
+./nordbuds_rfcomm.py on
+```
+
+Payloads in that script come from budsctl's `oneplus_buds4.yaml`.
+
+---
+
+## File structure
+
+```
+nordbuds-mac/
+├── nordbuds.swift         CoreBluetooth client (the actual program)
+├── Info.plist             Bundle plist with NSBluetoothAlwaysUsageDescription
+├── build.sh               Builds + ad-hoc signs NordBuds.app
+├── nordbuds-cli           Bash wrapper: open's the .app, tails its log
+├── nordbuds_rfcomm.py     RFCOMM fallback (PyObjC + IOBluetooth)
+├── raycast/
+│   ├── anc-on.sh
+│   ├── anc-off.sh
+│   └── anc-trans.sh
+└── NordBuds.app/          ← built by ./build.sh, gitignored
+```
+
+---
+
+## Credits
+
+- **[@Vedant1521](https://github.com/Vedant1521)** — original protocol
+  reverse-engineering and Swift implementation for Nord Buds 3 Pro
+  ([Cracked-Oneplus_buds](https://github.com/Vedant1521/Cracked-Oneplus_buds)).
+- **[@advnpzn](https://github.com/advnpzn)** — protocol opcodes / mode-byte
+  mapping for the Buds 4 family ([budsctl](https://github.com/advnpzn/budsctl)).
+
 ## License
 
-MIT
+MIT (inherited from upstream).

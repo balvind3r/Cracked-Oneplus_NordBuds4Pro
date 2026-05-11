@@ -68,12 +68,15 @@ class NordBudsCLI: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         print("[OK] Connected to \(peripheral.name ?? "Nord Buds")")
-        peripheral.discoverServices(nil)
+        peripheral.discoverServices([CBUUID(string: "0000079A-D102-11E1-9B23-00025B00A5A5")])
     }
     
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         for service in peripheral.services ?? [] {
-            peripheral.discoverCharacteristics(nil, for: service)
+            peripheral.discoverCharacteristics([
+                CBUUID(string: "0100079A-D102-11E1-9B23-00025B00A5A5"),
+                CBUUID(string: "0200079A-D102-11E1-9B23-00025B00A5A5")
+            ], for: service)
         }
     }
     
@@ -82,36 +85,17 @@ class NordBudsCLI: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                    error: Error?) {
         
         for char in service.characteristics ?? [] {
-            let props = char.properties.rawValue
-            
             if char.uuid.uuidString == "0100079A-D102-11E1-9B23-00025B00A5A5" {
                 cmdChar079A = char
-                print("[+] Found Write Char: 0100079A")
             }
-            
             if char.uuid.uuidString == "0200079A-D102-11E1-9B23-00025B00A5A5" {
                 notifyChar079A = char
                 peripheral.setNotifyValue(true, for: char)
-                print("[+] Found Notify Char: 0200079A")
-            }
-            
-            if char.uuid.uuidString == "FE2C123A-8366-4814-8EB0-01DE32100BEA" {
-                cmdCharFE2C = char
-                peripheral.setNotifyValue(true, for: char)
-                print("[+] Found FE2C Command Char")
-            }
-            
-            if props & 16 != 0 || props & 32 != 0 {
-                peripheral.setNotifyValue(true, for: char)
-            }
-            
-            if props & 2 != 0 {
-                peripheral.readValue(for: char)
             }
         }
         
         if cmdChar079A != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.runCommand() }
+            runCommand()
         }
     }
     
@@ -171,11 +155,11 @@ class NordBudsCLI: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         
         switch command {
         case .ancOn:
-            sendAncMode(0x01, name: "ANC ON")
+            sendAncMode(0x02, name: "ANC ON")
         case .ancOff:
-            sendAncMode(0x04, name: "ANC OFF")
+            sendAncMode(0x01, name: "ANC OFF")
         case .transparency:
-            sendAncMode(0x02, name: "TRANSPARENCY")
+            sendAncMode(0x04, name: "TRANSPARENCY")
         case .battery:
             sendBatteryQuery()
         case .info:
@@ -196,21 +180,11 @@ class NordBudsCLI: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     
     func sendAncMode(_ mode: UInt8, name: String) {
         sendPacket([0xAA, 0x07, 0x00, 0x00, 0x00, 0x01, 0x23, 0x00, 0x00, 0x12], name: "HELLO")
+        sendPacket([0xAA, 0x0C, 0x00, 0x00, 0x00, 0x85, 0x41, 0x05, 0x00, 0x00, 0xB5, 0x50, 0xA0, 0x69], name: "REGISTER")
+        let anc: [UInt8] = [0xAA, 0x0A, 0x00, 0x00, 0x04, 0x04, 0x42, 0x03, 0x00, 0x01, 0x01, mode]
+        sendPacket(anc, name: "ANC SET: \(name)")
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            self.sendPacket([0xAA, 0x0C, 0x00, 0x00, 0x00, 0x85, 0x41, 0x05, 0x00, 0x00, 0xB5, 0x50, 0xA0, 0x69], name: "REGISTER")
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
-            self.sendPacket([0xAA, 0x09, 0x00, 0x00, 0x04, 0x82, 0x44, 0x02, 0x00, 0x00, 0xF2], name: "QUERY")
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-            let anc: [UInt8] = [0xAA, 0x0A, 0x00, 0x00, 0x04, 0x04, 0x42, 0x03, 0x00, 0x01, 0x01, mode]
-            self.sendPacket(anc, name: "ANC SET: \(name)")
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             print("\n[DONE] \(name) command sent")
             exit(0)
         }

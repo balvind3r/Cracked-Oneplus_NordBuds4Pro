@@ -1,0 +1,4 @@
+# Build artefacts — produced by ./build.sh, not checked in.
+NordBuds.app/
+nordbuds
+*.dSYM/
