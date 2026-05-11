@@ -68,7 +68,7 @@ work too, but the mode-byte mapping or auth token may differ — see
 ## Build
 
 ```bash
-git clone https://github.com/<you>/nordbuds-mac.git
+git clone https://github.com/balvind3r/Cracked-Oneplus_NordBuds4Pro.git
 cd nordbuds-mac
 ./build.sh
 ```
