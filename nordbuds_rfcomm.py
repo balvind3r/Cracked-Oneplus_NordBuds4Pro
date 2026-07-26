@@ -22,7 +22,14 @@ import objc
 from Foundation import NSObject, NSRunLoop, NSDate
 from IOBluetooth import IOBluetoothDevice
 
-RFCOMM_CHANNEL = 15
+# The Nord Buds 4 Pro expose the vendor control protocol on the "COM" SPP
+# service, RFCOMM channel 7 (NOT 15 — that channel does not exist on this
+# hardware). Confirmed by SDP enumeration on macOS 26.
+# NOTE: a bare `python3` process is silently blocked by Bluetooth TCC on
+# recent macOS and will hang on pairedDevices(); the Swift .app bundle
+# (nordbuds.swift / NordBuds.app) is the reliable path. This script remains
+# only as a reference / for granting Terminal Bluetooth access manually.
+RFCOMM_CHANNEL = 7
 
 # Exact payloads from budsctl/plugins/oneplus_buds4.yaml
 PAYLOADS: dict[str, bytes] = {

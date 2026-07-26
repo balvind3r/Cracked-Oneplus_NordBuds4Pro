@@ -2,3 +2,6 @@
 NordBuds.app/
 nordbuds
 *.dSYM/
+
+# macOS
+.DS_Store

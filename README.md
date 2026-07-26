@@ -109,13 +109,19 @@ HUD when the command finishes.
 
 ## How it works (quick)
 
-1. CoreBluetooth's `retrieveConnectedPeripherals(withServices:)` finds the
-   buds by the **OPO** service UUID (`0000079A-…`). This is name-independent
-   — renaming the buds in System Settings does not break the script.
-2. Discover only the OPO write + notify characteristics.
-3. Send three frames back-to-back over the write characteristic:
-   `HELLO` → `REGISTER` (with auth token `B5 50 A0 69`) → `SET ANC`.
-4. Wait 250 ms for the radio to flush, exit.
+> **Note (2026):** On macOS 26 (Tahoe) the buds no longer expose the BLE
+> control service — `retrieveConnectedPeripherals` returns nothing and a broad
+> LE scan never sees them. The tool now talks over **Bluetooth Classic
+> RFCOMM** instead. The old BLE flow is kept in git history.
+
+1. Enumerate paired devices via IOBluetooth and match the buds by name
+   (`Nord Buds` / `OnePlus`).
+2. Open the already-connected Classic link and open **RFCOMM channel 7**
+   (the vendor `COM` SPP service; channel 2 is hands-free audio). If channel 7
+   has moved, fall back to probing channels 6, 5, 1.
+3. Write the ANC frame (opcode `0x48` on / `0x4A` off / `0x50` transparency)
+   and wait for the buds' `04 84 <opcode>` ACK.
+4. Exit as soon as the ACK arrives (~1 s), or fail if none comes.
 
 Frame format:
 

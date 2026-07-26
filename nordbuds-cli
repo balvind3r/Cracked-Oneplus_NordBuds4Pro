@@ -1,7 +1,11 @@
 #!/bin/bash
 # Wrapper that launches NordBuds.app via LaunchServices so the bundle
-# (not Terminal) is the responsible TCC process. Streams the bundle's
-# log output back to this terminal.
+# (not Terminal) is the responsible TCC process, then prints its log.
+#
+# `open -W` blocks until the app exits; the app exits within ~1-2s once the
+# earbuds ACK the command. We deliberately do NOT `tail -F` — macOS/BSD tail
+# has no --pid option, so a follow would never terminate and the wrapper
+# (and every Raycast invocation) would hang forever.
 set -e
 
 cmd="${1:-help}"
@@ -12,10 +16,8 @@ log="$HOME/Library/Logs/NordBuds.log"
 mkdir -p "$(dirname "$log")"
 : > "$log"
 
-# Launch the bundle, redirecting its stdio to the log file.
-open -W -n -a "$app" --stdout "$log" --stderr "$log" --args "$cmd" &
-open_pid=$!
+# Launch the bundle and wait for it to finish, capturing its stdio.
+open -W -n -a "$app" --stdout "$log" --stderr "$log" --args "$cmd"
 
-# Tail the log until `open` returns.
-tail -n +1 -F "$log" --pid "$open_pid" 2>/dev/null
-wait "$open_pid" 2>/dev/null || true
+# Surface the result to whoever called us (terminal / Raycast HUD).
+cat "$log"
